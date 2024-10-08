@@ -5,32 +5,19 @@ import time
 import threading
 import concurrent.futures
 import asyncio
-
+import requests
 from voice import Voice as Voice
 
 class Bot(discord.Client):
     def __init__(self, TOKEN, INTENTS):
-        super().__init__(intents=INTENTS)    
+        super().__init__(intents=INTENTS)
         self.TOKEN = TOKEN
         self.voice_connections = []
         self.song_queue = {}
         self.is_running = True
+        self.version = 1.1
         self.run(self.TOKEN)
 
-    # Thread to download songs
-    async def download_task(self):
-        await self.wait_until_ready()
-        found = False
-        while not self.is_closed():
-            if not found:
-                await asyncio.sleep(0.5)
-            found = False
-            for vc in self.voice_connections:
-                for song in vc.songs:
-                    if not song.is_ready:
-                        await song.download()
-                        found = True
-                        break
 
     # Thread to start playing songs
     async def play_task(self):
@@ -39,19 +26,49 @@ class Bot(discord.Client):
         while not self.is_closed():
             await asyncio.sleep(0.5)
             for vc in self.voice_connections:
-                if(len(vc.songs) > 0 and vc.songs[0].is_ready and not vc.voice_client.is_playing() and not vc.is_paused):
+                if(len(vc.songs) > 0 and not vc.voice_client.is_playing() and not vc.is_paused):
                     s = vc.songs.pop(0)
                     await vc.start_playing(s)
-                    print("Start playing songs!", s.url)
                     del s
-        
-        
+
+    async def check_version(self):
+        if(config['DISCORD']['NOTIFY_NEW_VERSIONS'] == "False"):
+            return
+
+        try:
+            response = requests.get("https://api.github.com/repos/skarkii/discord-musicbot/releases/latest", timeout=5)
+        except requests.exceptions.Timeout:
+            return
+
+        v = response.json()["name"][1:]
+
+        try:
+            float(v)
+        except ValueError:
+            print("Failed to verify version from Github API, have naming convention changed?")
+            return
+
+        if(float(v) > self.version):
+            msg = f"Version {v} is now available to download at https://github.com/Skarkii/Discord-MusicBot/releases !"
+            print(msg)
+            if(int(config['DISCORD']['OWNER_ID']) == 0):
+                return
+            u = await self.fetch_user(int(config['DISCORD']['OWNER_ID']))
+            if u is not None:
+                await u.send(msg)
+            else:
+                print("Could not fetch OWNER_ID to send new available version message")
+
+
     async def on_ready(self):
         print(f'Logged in as {self.user.name}')
+        await self.check_version()
         self.loop.create_task(self.play_task())
-        self.loop.create_task(self.download_task())
-        
+
     async def on_message(self, message):
+        if(message.author.id == self.user.id):
+            return
+
         v = None
         for vc in self.voice_connections:
             if vc.gid == message.guild.id:
@@ -64,7 +81,7 @@ class Bot(discord.Client):
 
             if message.guild.id in self.song_queue:
                 v.songs = self.song_queue[message.guild.id]
-            
+
         await v.handle_message(message)
 
     async def on_voice_state_update(self, member, before, after):
